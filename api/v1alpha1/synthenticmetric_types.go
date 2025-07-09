@@ -71,6 +71,10 @@ type SynthenticMetricSpec struct {
 type SynthenticMetricStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
+
+	// SyntheticUsageRatio is the calculated synthetic usage ratio.
+	// +optional
+	SyntheticUsageRatio *string `json:"syntheticUsageRatio,omitempty"`
 }
 
 //+kubebuilder:object:root=true
