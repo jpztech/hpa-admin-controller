@@ -1,5 +1,5 @@
 /*
-Copyright 2025.
+Copyright 2023.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,18 +18,53 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2beta2"
 )
 
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+
+// ScaleTargetRef points to the target resource to scale.
+type ScaleTargetRef struct {
+	// APIVersion is the API version of the target resource.
+	// +kubebuilder:validation:Required
+	APIVersion string `json:"apiVersion"`
+	// Kind is the kind of the target resource.
+	// +kubebuilder:validation:Required
+	Kind string `json:"kind"`
+	// Name is the name of the target resource.
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+}
+
+// MetricSpec defines the desired behavior of a metric.
+type MetricSpec struct {
+	// Weight is the weight of this metric.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=100
+	Weight int32 `json:"weight"`
+	// Type is the type of metric. Only "Pods" is supported currently.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=Pods
+	Type autoscalingv2.MetricSourceType `json:"type"`
+	// Pods specifies the pods metric source. Required if Type is "Pods".
+	// +kubebuilder:validation:Required
+	Pods *autoscalingv2.PodsMetricSource `json:"pods"`
+}
 
 // SynthenticMetricSpec defines the desired state of SynthenticMetric
 type SynthenticMetricSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
-	// Foo is an example field of SynthenticMetric. Edit synthenticmetric_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+	// ScaleTargetRef points to the target resource to scale.
+	// +kubebuilder:validation:Required
+	ScaleTargetRef ScaleTargetRef `json:"scaleTargetRef"`
+	// Metrics is the list of metrics used to calculate the desired replicas.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	Metrics []MetricSpec `json:"metrics"`
 }
 
 // SynthenticMetricStatus defines the observed state of SynthenticMetric
@@ -40,6 +75,10 @@ type SynthenticMetricStatus struct {
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
+//+kubebuilder:resource:path=synthenticmetrics,singular=synthenticmetric,scope=Namespaced,shortName=sm
+//+kubebuilder:printcolumn:name="Target Kind",type="string",JSONPath=".spec.scaleTargetRef.kind"
+//+kubebuilder:printcolumn:name="Target Name",type="string",JSONPath=".spec.scaleTargetRef.name"
+//+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // SynthenticMetric is the Schema for the synthenticmetrics API
 type SynthenticMetric struct {
