@@ -1,0 +1,9 @@
+apiVersion: scaling.scaling.com/v1alpha1
+kind: SynthenticMetric
+metadata:
+  labels:
+    app.kubernetes.io/name: app
+    app.kubernetes.io/managed-by: kustomize
+  name: synthenticmetric-sample
+spec:
+  # TODO(user): Add fields here

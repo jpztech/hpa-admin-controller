@@ -1,0 +1,23 @@
+# permissions for end users to view synthenticmetrics.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: app
+    app.kubernetes.io/managed-by: kustomize
+  name: synthenticmetric-viewer-role
+rules:
+- apiGroups:
+  - scaling.scaling.com
+  resources:
+  - synthenticmetrics
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - scaling.scaling.com
+  resources:
+  - synthenticmetrics/status
+  verbs:
+  - get
