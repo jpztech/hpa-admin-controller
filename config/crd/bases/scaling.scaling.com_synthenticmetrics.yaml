@@ -1,0 +1,208 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.14.0
+  name: synthenticmetrics.scaling.scaling.com
+spec:
+  group: scaling.scaling.com
+  names:
+    kind: SynthenticMetric
+    listKind: SynthenticMetricList
+    plural: synthenticmetrics
+    shortNames:
+    - sm
+    singular: synthenticmetric
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.scaleTargetRef.kind
+      name: Target Kind
+      type: string
+    - jsonPath: .spec.scaleTargetRef.name
+      name: Target Name
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: SynthenticMetric is the Schema for the synthenticmetrics API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: SynthenticMetricSpec defines the desired state of SynthenticMetric
+            properties:
+              metrics:
+                description: Metrics is the list of metrics used to calculate the
+                  desired replicas.
+                items:
+                  description: MetricSpec defines the desired behavior of a metric.
+                  properties:
+                    pods:
+                      description: Pods specifies the pods metric source. Required
+                        if Type is "Pods".
+                      properties:
+                        metric:
+                          description: metric identifies the target metric by name
+                            and selector
+                          properties:
+                            name:
+                              description: name is the name of the given metric
+                              type: string
+                            selector:
+                              description: |-
+                                selector is the string-encoded form of a standard kubernetes label selector for the given metric
+                                When set, it is passed as an additional parameter to the metrics server for more specific metrics scoping.
+                                When unset, just the metricName will be used to gather metrics.
+                              properties:
+                                matchExpressions:
+                                  description: matchExpressions is a list of label
+                                    selector requirements. The requirements are ANDed.
+                                  items:
+                                    description: |-
+                                      A label selector requirement is a selector that contains values, a key, and an operator that
+                                      relates the key and values.
+                                    properties:
+                                      key:
+                                        description: key is the label key that the
+                                          selector applies to.
+                                        type: string
+                                      operator:
+                                        description: |-
+                                          operator represents a key's relationship to a set of values.
+                                          Valid operators are In, NotIn, Exists and DoesNotExist.
+                                        type: string
+                                      values:
+                                        description: |-
+                                          values is an array of string values. If the operator is In or NotIn,
+                                          the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                          the values array must be empty. This array is replaced during a strategic
+                                          merge patch.
+                                        items:
+                                          type: string
+                                        type: array
+                                    required:
+                                    - key
+                                    - operator
+                                    type: object
+                                  type: array
+                                matchLabels:
+                                  additionalProperties:
+                                    type: string
+                                  description: |-
+                                    matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                                    map is equivalent to an element of matchExpressions, whose key field is "key", the
+                                    operator is "In", and the values array contains only "value". The requirements are ANDed.
+                                  type: object
+                              type: object
+                              x-kubernetes-map-type: atomic
+                          required:
+                          - name
+                          type: object
+                        target:
+                          description: target specifies the target value for the given
+                            metric
+                          properties:
+                            averageUtilization:
+                              description: |-
+                                averageUtilization is the target value of the average of the
+                                resource metric across all relevant pods, represented as a percentage of
+                                the requested value of the resource for the pods.
+                                Currently only valid for Resource metric source type
+                              format: int32
+                              type: integer
+                            averageValue:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              description: |-
+                                averageValue is the target value of the average of the
+                                metric across all relevant pods (as a quantity)
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            type:
+                              description: type represents whether the metric type
+                                is Utilization, Value, or AverageValue
+                              type: string
+                            value:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              description: value is the target value of the metric
+                                (as a quantity).
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                          required:
+                          - type
+                          type: object
+                      required:
+                      - metric
+                      - target
+                      type: object
+                    type:
+                      description: Type is the type of metric. Only "Pods" is supported
+                        currently.
+                      enum:
+                      - Pods
+                      type: string
+                    weight:
+                      description: Weight is the weight of this metric.
+                      format: int32
+                      maximum: 100
+                      minimum: 0
+                      type: integer
+                  required:
+                  - pods
+                  - type
+                  - weight
+                  type: object
+                minItems: 1
+                type: array
+              scaleTargetRef:
+                description: ScaleTargetRef points to the target resource to scale.
+                properties:
+                  apiVersion:
+                    description: APIVersion is the API version of the target resource.
+                    type: string
+                  kind:
+                    description: Kind is the kind of the target resource.
+                    type: string
+                  name:
+                    description: Name is the name of the target resource.
+                    type: string
+                required:
+                - apiVersion
+                - kind
+                - name
+                type: object
+            required:
+            - metrics
+            - scaleTargetRef
+            type: object
+          status:
+            description: SynthenticMetricStatus defines the observed state of SynthenticMetric
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
