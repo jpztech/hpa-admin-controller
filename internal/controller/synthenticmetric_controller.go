@@ -22,12 +22,13 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/kubernetes"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/restmapper"
 	"k8s.io/metrics/pkg/client/custom_metrics"
 	"k8s.io/metrics/pkg/client/external_metrics"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -65,14 +66,23 @@ func (r *SynthenticMetricReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
-	clientset, err := kubernetes.NewForConfig(r.Config)
+	// Create a discovery client
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(r.Config)
 	if err != nil {
-		logger.Error(err, "Failed to create kubernetes clientset")
+		logger.Error(err, "Failed to create discovery client")
 		return ctrl.Result{}, err
 	}
 
-	customMetricsClient := custom_metrics.NewForConfig(r.Config)
-	externalMetricsClient := external_metrics.NewForConfig(r.Config)
+	// Create a REST mapper
+	cachedDiscoveryClient := memory.NewMemCacheClient(discoveryClient)
+	mapper := restmapper.NewDeferredDiscoveryRESTMapper(cachedDiscoveryClient)
+
+	customMetricsClient := custom_metrics.NewForConfig(r.Config, mapper, custom_metrics.NewAvailableAPIsGetter(cachedDiscoveryClient))
+	externalMetricsClient, err := external_metrics.NewForConfig(r.Config)
+	if err != nil {
+		logger.Error(err, "Failed to create external metrics client")
+		return ctrl.Result{}, err
+	}
 
 	var syntheticUsageRatio float64
 
@@ -89,65 +99,53 @@ func (r *SynthenticMetricReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			namespace := syntheticMetric.Namespace // Assuming target is in the same namespace
 
 			// Determine the target resource kind
-			targetGR := metav1.GroupResource{Group: "", Resource: syntheticMetric.Spec.ScaleTargetRef.Kind} // Adjust group if needed, e.g., "apps" for Deployments
-			if syntheticMetric.Spec.ScaleTargetRef.APIVersion != "v1" { // core v1 types have no group
-				targetGR.Group = syntheticMetric.Spec.ScaleTargetRef.APIVersion
+			// Convert metav1.GroupResource to schema.GroupKind
+			gk := schema.GroupKind{Group: syntheticMetric.Spec.ScaleTargetRef.APIVersion, Kind: syntheticMetric.Spec.ScaleTargetRef.Kind}
+			if gk.Group == "v1" { // Core v1 types have no group in terms of API path, but GroupKind should reflect it if specified
+				gk.Group = "" // Normalize for core types if APIVersion is "v1"
 			}
 
+			// Convert metav1.LabelSelector to labels.Selector
+			selector, err := metav1.LabelSelectorAsSelector(metricSpec.Pods.Metric.Selector)
+			if err != nil {
+				logger.Error(err, "Failed to convert label selector", "selector", metricSpec.Pods.Metric.Selector)
+				continue
+			}
 
-			// Fetch metric from custom.metrics.k8s.io
-			// Note: This assumes the metric is a pod metric.
-			// The GroupResource should refer to "pods".
-			// The 'namedMetric' would be the scaleTargetRef's name if metrics are aggregated by the target object.
-			// Or, if it's a direct pod metric, you might need to list pods and then get metrics.
-			// This part is highly dependent on how your metrics are exposed by the metrics server.
-
-			// Let's assume for "Pods" type, we are looking for a custom metric associated with the target resource itself.
-			// This is a common pattern but might need adjustment.
 			value, err := customMetricsClient.NamespacedMetrics(namespace).GetForObject(
-				targetGR,                        // This might need to be pods if it's a direct pod metric
-				syntheticMetric.Spec.ScaleTargetRef.Name, // Name of the object (e.g., Deployment name)
+				gk,
+				syntheticMetric.Spec.ScaleTargetRef.Name,
 				metricName,
-				metav1.LabelSelector{}, // metricSpec.Pods.Metric.Selector - needs conversion to metav1.LabelSelector
+				selector,
 			)
 
 			if err != nil {
-				// Fallback to external metrics if custom metric not found or error
 				logger.Info("Trying to fetch from external.metrics.k8s.io", "metricName", metricName)
-				extValue, errExt := externalMetricsClient.NamespacedMetrics(namespace).Get(metricName, metav1.LabelSelector{})
+				extValue, errExt := externalMetricsClient.NamespacedMetrics(namespace).List(metricName, selector)
 				if errExt != nil {
 					logger.Error(errExt, "Failed to get external metric for", "metricName", metricName)
-					// Continue to next metric or handle error appropriately
-					// We might want to skip this metric in the calculation or return an error for the reconcile
 					continue
 				}
 				if len(extValue.Items) > 0 {
-					currentValue = extValue.Items[0].Value.MilliValue() / 1000 // Convert to base units
+					currentValue = extValue.Items[0].Value.MilliValue() / 1000
 					logger.Info("Got external metric", "metricName", metricName, "value", currentValue)
 				} else {
 					logger.Info("No external metric items found for", "metricName", metricName)
 					continue
 				}
 			} else {
-				currentValue = value.Value.MilliValue() / 1000 // Convert to base units if it's a milli-value
+				currentValue = value.Value.MilliValue() / 1000
 				logger.Info("Got custom metric", "metricName", metricName, "value", currentValue)
 			}
 
-
 			if metricSpec.Pods.Target.AverageValue != nil {
 				targetValue = metricSpec.Pods.Target.AverageValue.Value()
-				if metricSpec.Pods.Target.AverageValue.Type == resource.String {
-					// Potentially parse string quantities like "100m" if needed, though Value() should handle it for simple numbers
-					parsedQty, err := resource.ParseQuantity(metricSpec.Pods.Target.AverageValue.String())
-					if err != nil {
-						logger.Error(err, "Failed to parse target averageValue", "value", metricSpec.Pods.Target.AverageValue.String())
-						continue
-					}
-					targetValue = parsedQty.Value() // For CPU, this might be milli-cores, ensure units match currentValue
-				}
+				// The .Type field on resource.Quantity was removed.
+				// Value() should return the int64 representation.
+				// For string parsing, resource.ParseQuantity is still valid if you have a string.
 			} else {
 				logger.Info("Target AverageValue not set for metric", "metricName", metricName)
-				continue // Skip if target is not defined
+				continue
 			}
 
 		default:
