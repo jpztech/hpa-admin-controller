@@ -31,11 +31,23 @@ import (
 	"k8s.io/client-go/restmapper"
 	"k8s.io/metrics/pkg/client/custom_metrics"
 	"k8s.io/metrics/pkg/client/external_metrics"
+
+	"github.com/prometheus/client_golang/prometheus"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	scalingv1alpha1 "github.com/jpztech/hpa-admin-controller/api/v1alpha1"
+)
+
+var (
+	SyntheticUsageRatioMetric = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "syntheticUsageRatio",
+			Help: "Synthetic usage ratio per ScaleTargetRef",
+		},
+		[]string{"apiVersion", "kind", "name"},
+	)
 )
 
 // SynthenticMetricReconciler reconciles a SynthenticMetric object
@@ -179,6 +191,14 @@ func (r *SynthenticMetricReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// For now, we've updated the status. The HPA would then need to be configured
 	// to read an external metric that this controller (or an adapter) exposes.
 	// A simple way for an adapter to get this value is by reading the CR status.
+
+	// Update Prometheus metric
+	SyntheticUsageRatioMetric.With(prometheus.Labels{
+		"apiVersion": syntheticMetric.Spec.ScaleTargetRef.APIVersion,
+		"kind":       syntheticMetric.Spec.ScaleTargetRef.Kind,
+		"name":       syntheticMetric.Spec.ScaleTargetRef.Name,
+	}).Set(syntheticUsageRatio)
+	logger.Info("Updated Prometheus metric", "syntheticUsageRatio", syntheticUsageRatio)
 
 	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 }

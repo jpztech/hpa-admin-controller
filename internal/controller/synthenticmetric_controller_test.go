@@ -22,19 +22,44 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	gomegatypes "github.com/onsi/gomega/types"
+	dto "github.com/prometheus/client_model/go"
 	autoscalingv2 "k8s.io/api/autoscaling/v2beta2"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	// "sigs.k8s.io/controller-runtime/pkg/metrics" // Comment out if not directly used, or keep if other global metrics are checked
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	scalingv1alpha1 "github.com/jpztech/hpa-admin-controller/api/v1alpha1"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 var _ = Describe("SynthenticMetric Controller", func() {
 	Context("When reconciling a SynthenticMetric resource", func() {
 		const resourceName = "test-sm-resource"
+		var testRegistry *prometheus.Registry
+		var originalSyntheticUsageRatioMetric *prometheus.GaugeVec
+
+		BeforeEach(func() {
+			testRegistry = prometheus.NewRegistry()
+			originalSyntheticUsageRatioMetric = SyntheticUsageRatioMetric // Save the original global metric
+
+			// Create a new metric instance for this test and register it with the testRegistry
+			SyntheticUsageRatioMetric = prometheus.NewGaugeVec(
+				prometheus.GaugeOpts{
+					Name: "syntheticUsageRatio",
+					Help: "Synthetic usage ratio per ScaleTargetRef",
+				},
+				[]string{"apiVersion", "kind", "name"},
+			)
+			testRegistry.MustRegister(SyntheticUsageRatioMetric)
+		})
+
+		AfterEach(func() {
+			SyntheticUsageRatioMetric = originalSyntheticUsageRatioMetric // Restore the original global metric
+		})
 		const namespace = "default"
 
 		ctx := context.Background()
@@ -126,7 +151,36 @@ var _ = Describe("SynthenticMetric Controller", func() {
 				// Since metrics clients will fail to fetch actual metrics in envtest,
 				// the calculated ratio will be 0.
 				g.Expect(*updatedSm.Status.SyntheticUsageRatio).To(Equal("0.00"))
+
+				// Check Prometheus metric using the testRegistry
+				gatheredMetrics, err := testRegistry.Gather()
+				g.Expect(err).NotTo(HaveOccurred())
+
+				var foundMetric *dto.MetricFamily
+				for _, mf := range gatheredMetrics {
+					if mf.GetName() == "syntheticUsageRatio" {
+						foundMetric = mf
+						break
+					}
+				}
+				g.Expect(foundMetric).NotTo(BeNil(), "syntheticUsageRatio metric not found")
+				g.Expect(foundMetric.Metric).To(HaveLen(1))
+
+				metric := foundMetric.Metric[0]
+				g.Expect(metric.Label).To(ContainElement(haveNameAndValue("apiVersion", "apps/v1")))
+				g.Expect(metric.Label).To(ContainElement(haveNameAndValue("kind", "Deployment")))
+				g.Expect(metric.Label).To(ContainElement(haveNameAndValue("name", "test-deployment")))
+				g.Expect(metric.Gauge.GetValue()).To(Equal(0.00))
+
 			}, time.Second*10, time.Millisecond*250).Should(Succeed())
 		})
 	})
 })
+
+// Helper matcher for LabelPair
+func haveNameAndValue(name, value string) gomegatypes.GomegaMatcher {
+	return SatisfyAll(
+		WithTransform(func(l *dto.LabelPair) string { return l.GetName() }, Equal(name)),
+		WithTransform(func(l *dto.LabelPair) string { return l.GetValue() }, Equal(value)),
+	)
+}
