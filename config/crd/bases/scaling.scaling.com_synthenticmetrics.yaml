@@ -100,11 +100,13 @@ spec:
                                         items:
                                           type: string
                                         type: array
+                                        x-kubernetes-list-type: atomic
                                     required:
                                     - key
                                     - operator
                                     type: object
                                   type: array
+                                  x-kubernetes-list-type: atomic
                                 matchLabels:
                                   additionalProperties:
                                     type: string
@@ -200,6 +202,11 @@ spec:
             type: object
           status:
             description: SynthenticMetricStatus defines the observed state of SynthenticMetric
+            properties:
+              syntheticUsageRatio:
+                description: SyntheticUsageRatio is the calculated synthetic usage
+                  ratio.
+                type: string
             type: object
         type: object
     served: true
