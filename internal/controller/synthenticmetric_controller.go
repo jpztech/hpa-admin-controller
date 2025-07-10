@@ -21,16 +21,22 @@ import (
 	"fmt"
 	"time"
 
+	"context"
+	"fmt"
+	"time"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema" // Ensure schema is imported
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
 	"k8s.io/metrics/pkg/client/custom_metrics"
-	// "k8s.io/metrics/pkg/client/external_metrics" // No longer needed
 
 	"github.com/prometheus/client_golang/prometheus"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -111,41 +117,123 @@ func (r *SynthenticMetricReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			metricName := metricSpec.Pods.Metric.Name
 			namespace := syntheticMetric.Namespace // Assuming target is in the same namespace
 
-			// Determine the target resource kind
-			gv, err := schema.ParseGroupVersion(syntheticMetric.Spec.ScaleTargetRef.APIVersion)
+			targetRefGV, err := schema.ParseGroupVersion(syntheticMetric.Spec.ScaleTargetRef.APIVersion)
 			if err != nil {
-				logger.Error(err, "Failed to parse APIVersion", "apiVersion", syntheticMetric.Spec.ScaleTargetRef.APIVersion)
-				continue // Or handle error appropriately
-			}
-			gk := schema.GroupKind{Group: gv.Group, Kind: syntheticMetric.Spec.ScaleTargetRef.Kind}
-
-			// Convert metav1.LabelSelector to labels.Selector
-			selector, err := metav1.LabelSelectorAsSelector(metricSpec.Pods.Metric.Selector)
-			if err != nil {
-				logger.Error(err, "Failed to convert label selector", "selector", metricSpec.Pods.Metric.Selector)
+				logger.Error(err, "Failed to parse APIVersion for ScaleTargetRef", "apiVersion", syntheticMetric.Spec.ScaleTargetRef.APIVersion)
 				continue
 			}
 
-			value, err := customMetricsClient.NamespacedMetrics(namespace).GetForObject(
-				gk,
-				syntheticMetric.Spec.ScaleTargetRef.Name,
-				metricName,
-				selector,
-			)
+			if targetRefGV.Group == appsv1.GroupName && syntheticMetric.Spec.ScaleTargetRef.Kind == "Deployment" {
+				// Handle Deployment: List pods and aggregate metrics
+				deployment := &appsv1.Deployment{}
+				if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: syntheticMetric.Spec.ScaleTargetRef.Name}, deployment); err != nil {
+					logger.Error(err, "Failed to get Deployment", "namespace", namespace, "name", syntheticMetric.Spec.ScaleTargetRef.Name)
+					continue
+				}
 
-			if err != nil {
-				logger.Error(err, "Failed to get custom metric for object", "metricName", metricName, "groupKind", gk, "name", syntheticMetric.Spec.ScaleTargetRef.Name)
-				continue
+				podSelector, err := metav1.LabelSelectorAsSelector(deployment.Spec.Selector)
+				if err != nil {
+					logger.Error(err, "Failed to convert deployment selector to selector", "deploymentName", deployment.Name)
+					continue
+				}
+
+				podList := &corev1.PodList{}
+				if err := r.List(ctx, podList, &client.ListOptions{Namespace: namespace, LabelSelector: podSelector}); err != nil {
+					logger.Error(err, "Failed to list pods for deployment", "deploymentName", deployment.Name, "selector", podSelector)
+					continue
+				}
+
+				if len(podList.Items) == 0 {
+					logger.Info("No pods found for deployment", "deploymentName", deployment.Name)
+					continue // Or set currentValue to 0 if appropriate
+				}
+
+				var totalPodMetricsValue int64
+				var readyPodsCount int32
+
+				for _, pod := range podList.Items {
+					if pod.Status.Phase != corev1.PodRunning {
+						logger.Info("Skipping pod not in Running phase", "podName", pod.Name, "phase", pod.Status.Phase)
+						continue
+					}
+					// Consider only ready pods for metric aggregation
+					isReady := false
+					for _, cond := range pod.Status.Conditions {
+						if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+							isReady = true
+							break
+						}
+					}
+					if !isReady {
+						logger.Info("Skipping not ready pod", "podName", pod.Name)
+						continue
+					}
+
+					// Use pod's GroupKind for GetForObject
+					podGK := schema.GroupKind{Group: corev1.GroupName, Kind: "Pod"}
+					// Use metricSpec.Pods.Metric.Selector for the metric itself, if provided and applicable at pod level
+					// If metricSpec.Pods.Metric.Selector is meant for the *metric query* not pod selection, adjust accordingly.
+					// For now, assuming it might not be needed if fetching a specific metric directly from a pod object.
+					metricLabelSelector, err := metav1.LabelSelectorAsSelector(metricSpec.Pods.Metric.Selector)
+					if err != nil {
+						logger.Error(err, "Failed to convert metric label selector", "selector", metricSpec.Pods.Metric.Selector)
+						// Decide if to continue with nil selector or skip this pod/metric
+						// Using nil selector for now, assuming direct pod metric doesn't need it or it's handled by metricName
+						metricLabelSelector = labels.Everything()
+					}
+
+					podMetricValue, err := customMetricsClient.NamespacedMetrics(pod.Namespace).GetForObject(
+						podGK,
+						pod.Name,
+						metricName,
+						metricLabelSelector, // This selector is for the metric query itself, not for selecting the pod.
+					)
+					if err != nil {
+						logger.Error(err, "Failed to get custom metric for pod", "metricName", metricName, "podName", pod.Name)
+						continue // Skip this pod's metric
+					}
+					totalPodMetricsValue += podMetricValue.Value.MilliValue()
+					readyPodsCount++
+					logger.Info("Got custom metric for pod", "metricName", metricName, "podName", pod.Name, "value", podMetricValue.Value.MilliValue())
+				}
+
+				if readyPodsCount == 0 {
+					logger.Info("No ready pods to calculate metrics from", "deploymentName", deployment.Name)
+					currentValue = 0 // Or handle as an error/skip
+				} else {
+					// currentValue represents the average across ready pods
+					currentValue = (totalPodMetricsValue / 1000) / int64(readyPodsCount) // Convert milli-value sum to base, then average
+					logger.Info("Aggregated custom metric for Deployment", "metricName", metricName, "deploymentName", deployment.Name, "totalMilliValue", totalPodMetricsValue, "readyPods", readyPodsCount, "averageValue", currentValue)
+				}
+
+			} else {
+				// Fallback to original behavior for non-Deployment or non-appsv1 group kinds
+				logger.Info("ScaleTargetRef is not a Deployment or not in appsv1 group, using original metric fetching logic",
+					"kind", syntheticMetric.Spec.ScaleTargetRef.Kind, "apiVersion", syntheticMetric.Spec.ScaleTargetRef.APIVersion)
+
+				targetGK := schema.GroupKind{Group: targetRefGV.Group, Kind: syntheticMetric.Spec.ScaleTargetRef.Kind}
+				metricLabelSelector, err := metav1.LabelSelectorAsSelector(metricSpec.Pods.Metric.Selector)
+				if err != nil {
+					logger.Error(err, "Failed to convert label selector for non-deployment", "selector", metricSpec.Pods.Metric.Selector)
+					continue
+				}
+				value, err := customMetricsClient.NamespacedMetrics(namespace).GetForObject(
+					targetGK,
+					syntheticMetric.Spec.ScaleTargetRef.Name,
+					metricName,
+					metricLabelSelector,
+				)
+				if err != nil {
+					logger.Error(err, "Failed to get custom metric for object", "metricName", metricName, "groupKind", targetGK, "name", syntheticMetric.Spec.ScaleTargetRef.Name)
+					continue
+				}
+				currentValue = value.Value.MilliValue() / 1000
+				logger.Info("Got custom metric for non-Deployment object", "metricName", metricName, "value", currentValue)
 			}
 
-			currentValue = value.Value.MilliValue() / 1000
-			logger.Info("Got custom metric", "metricName", metricName, "value", currentValue)
-
+			// Common logic for targetValue processing
 			if metricSpec.Pods.Target.AverageValue != nil {
 				targetValue = metricSpec.Pods.Target.AverageValue.Value()
-				// The .Type field on resource.Quantity was removed.
-				// Value() should return the int64 representation.
-				// For string parsing, resource.ParseQuantity is still valid if you have a string.
 			} else {
 				logger.Info("Target AverageValue not set for metric", "metricName", metricName)
 				continue
