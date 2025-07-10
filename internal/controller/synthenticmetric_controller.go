@@ -30,7 +30,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
 	"k8s.io/metrics/pkg/client/custom_metrics"
-	"k8s.io/metrics/pkg/client/external_metrics"
+	// "k8s.io/metrics/pkg/client/external_metrics" // No longer needed
 
 	"github.com/prometheus/client_golang/prometheus"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -90,11 +90,12 @@ func (r *SynthenticMetricReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	mapper := restmapper.NewDeferredDiscoveryRESTMapper(cachedDiscoveryClient)
 
 	customMetricsClient := custom_metrics.NewForConfig(r.Config, mapper, custom_metrics.NewAvailableAPIsGetter(cachedDiscoveryClient))
-	externalMetricsClient, err := external_metrics.NewForConfig(r.Config)
-	if err != nil {
-		logger.Error(err, "Failed to create external metrics client")
-		return ctrl.Result{}, err
-	}
+	// externalMetricsClient was removed as it's no longer used after focusing on custom pod metrics.
+	// externalMetricsClient, err := external_metrics.NewForConfig(r.Config)
+	// if err != nil {
+	// 	logger.Error(err, "Failed to create external metrics client")
+	// 	return ctrl.Result{}, err
+	// }
 
 	var syntheticUsageRatio float64
 
@@ -132,23 +133,12 @@ func (r *SynthenticMetricReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			)
 
 			if err != nil {
-				logger.Info("Trying to fetch from external.metrics.k8s.io", "metricName", metricName)
-				extValue, errExt := externalMetricsClient.NamespacedMetrics(namespace).List(metricName, selector)
-				if errExt != nil {
-					logger.Error(errExt, "Failed to get external metric for", "metricName", metricName)
-					continue
-				}
-				if len(extValue.Items) > 0 {
-					currentValue = extValue.Items[0].Value.MilliValue() / 1000
-					logger.Info("Got external metric", "metricName", metricName, "value", currentValue)
-				} else {
-					logger.Info("No external metric items found for", "metricName", metricName)
-					continue
-				}
-			} else {
-				currentValue = value.Value.MilliValue() / 1000
-				logger.Info("Got custom metric", "metricName", metricName, "value", currentValue)
+				logger.Error(err, "Failed to get custom metric for object", "metricName", metricName, "groupKind", gk, "name", syntheticMetric.Spec.ScaleTargetRef.Name)
+				continue
 			}
+
+			currentValue = value.Value.MilliValue() / 1000
+			logger.Info("Got custom metric", "metricName", metricName, "value", currentValue)
 
 			if metricSpec.Pods.Target.AverageValue != nil {
 				targetValue = metricSpec.Pods.Target.AverageValue.Value()
