@@ -24,7 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/runtime/schema" // Ensure schema is imported
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/rest"
@@ -112,11 +112,12 @@ func (r *SynthenticMetricReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			namespace := syntheticMetric.Namespace // Assuming target is in the same namespace
 
 			// Determine the target resource kind
-			// Convert metav1.GroupResource to schema.GroupKind
-			gk := schema.GroupKind{Group: syntheticMetric.Spec.ScaleTargetRef.APIVersion, Kind: syntheticMetric.Spec.ScaleTargetRef.Kind}
-			if gk.Group == "v1" { // Core v1 types have no group in terms of API path, but GroupKind should reflect it if specified
-				gk.Group = "" // Normalize for core types if APIVersion is "v1"
+			gv, err := schema.ParseGroupVersion(syntheticMetric.Spec.ScaleTargetRef.APIVersion)
+			if err != nil {
+				logger.Error(err, "Failed to parse APIVersion", "apiVersion", syntheticMetric.Spec.ScaleTargetRef.APIVersion)
+				continue // Or handle error appropriately
 			}
+			gk := schema.GroupKind{Group: gv.Group, Kind: syntheticMetric.Spec.ScaleTargetRef.Kind}
 
 			// Convert metav1.LabelSelector to labels.Selector
 			selector, err := metav1.LabelSelectorAsSelector(metricSpec.Pods.Metric.Selector)
