@@ -37,6 +37,7 @@ import (
 	scalingv1alpha1 "github.com/jpztech/hpa-admin-controller/api/v1alpha1"
 	"github.com/jpztech/hpa-admin-controller/internal/controller"
 	//+kubebuilder:scaffold:imports
+	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 var (
@@ -49,6 +50,9 @@ func init() {
 
 	utilruntime.Must(scalingv1alpha1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
+
+	// Register custom metrics with the global Prometheus registry
+	metrics.Registry.MustRegister(controller.SyntheticUsageRatioMetric)
 }
 
 func main() {
